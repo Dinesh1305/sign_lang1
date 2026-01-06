@@ -6,16 +6,8 @@ import OutputPanel from './components/OutputPanel';
 import ControlPanel from './components/ControlPanel';
 
 const ISL_SIGNS = [
-  'Hello',
-  'Thank You',
-  'Please',
-  'Yes',
-  'No',
-  'Help',
-  'Good Morning',
-  'Goodbye',
-  'Sorry',
-  'Welcome'
+  'Hello', 'Thank You', 'Please', 'Yes', 'No', 
+  'Help', 'Good Morning', 'Goodbye', 'Sorry', 'Welcome'
 ];
 
 function App() {
@@ -29,10 +21,7 @@ function App() {
 
   useEffect(() => {
     startCamera();
-
-    return () => {
-      stopCamera();
-    };
+    return () => stopCamera();
   }, []);
 
   const startCamera = async () => {
@@ -59,12 +48,8 @@ function App() {
   const simulateGestureDetection = () => {
     const randomSign = ISL_SIGNS[Math.floor(Math.random() * ISL_SIGNS.length)];
     setRecognizedSign(randomSign);
-
     setTimeout(() => {
-      setConvertedSpeech(prev => {
-        const newText = prev ? `${prev} ${randomSign}` : randomSign;
-        return newText;
-      });
+      setConvertedSpeech(prev => (prev ? `${prev} ${randomSign}` : randomSign));
     }, 500);
   };
 
@@ -94,12 +79,16 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen ${darkMode ? 'bg-gray-900' : 'bg-gray-100'} transition-colors duration-200`}>
+    <div className={`min-h-screen transition-colors duration-300 ${
+      darkMode 
+        ? 'bg-gradient-to-br from-gray-900 via-slate-900 to-black' 
+        : 'bg-gradient-to-br from-teal-50 via-white to-slate-100'
+    }`}>
       <Header darkMode={darkMode} />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 space-y-8">
             <CameraCard
               darkMode={darkMode}
               isActive={isCameraActive}
@@ -114,15 +103,17 @@ function App() {
           </div>
 
           <div className="lg:col-span-1">
-            <ControlPanel
-              darkMode={darkMode}
-              isDetecting={isDetecting}
-              isCameraActive={isCameraActive}
-              onStartDetection={handleStartDetection}
-              onStopDetection={handleStopDetection}
-              onReset={handleReset}
-              onToggleDarkMode={toggleDarkMode}
-            />
+            <div className="sticky top-24">
+              <ControlPanel
+                darkMode={darkMode}
+                isDetecting={isDetecting}
+                isCameraActive={isCameraActive}
+                onStartDetection={handleStartDetection}
+                onStopDetection={handleStopDetection}
+                onReset={handleReset}
+                onToggleDarkMode={toggleDarkMode}
+              />
+            </div>
           </div>
         </div>
       </main>
