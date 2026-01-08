@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Sign Language Detector</title>
+
+<style>
+body { font-family: Arial, sans-serif; background:#f4f7fb; margin:0; }
+.container { max-width:1200px; margin:30px auto; display:grid; grid-template-columns:2fr 1fr; gap:20px; }
+.card { background:white; border-radius:12px; padding:20px; box-shadow:0 10px 20px rgba(0,0,0,0.08); }
+.video-box { height:360px; background:#e5e7eb; border-radius:10px; display:flex; align-items:center; justify-content:center; position:relative; }
+video { width:100%; height:100%; object-fit:cover; border-radius:10px; display:none; }
+.status { position:absolute; top:10px; right:10px; padding:6px 12px; border-radius:20px; font-size:12px; }
+.offline { background:#eee; color:#555; }
+.online { background:#d1fae5; color:#065f46; }
+textarea { width:100%; height:80px; margin-top:10px; resize:none; padding:10px; }
+button { width:100%; padding:14px; margin-top:10px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; }
+.start { background:#14b8a6; color:white; }
+.stop { background:#ef4444; color:white; }
+.switch { background:#e5e7eb; }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <!-- LEFT -->
+  <div class="card">
+    <h3>Live Feed</h3>
+    <div class="video-box">
+      <video id="webcam" autoplay playsinline muted></video>
+      <div id="placeholder">Camera inactive</div>
+      <div id="status" class="status offline">OFFLINE</div>
+    </div>
+
+    <h3 style="margin-top:20px;">Detection Output</h3>
+    <textarea id="sign" placeholder="Recognized sign..."></textarea>
+    <textarea id="speech" placeholder="Converted sentence..."></textarea>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="card">
+    <h3>Control Center</h3>
+    <button id="startBtn" class="start">▶ Start Detection</button>
+    <button id="stopBtn" class="stop" disabled>■ Stop Detection</button>
+    <button id="switchBtn" class="switch" disabled>🔄 Switch Camera</button>
+  </div>
+
+</div>
+
+<!-- hidden processing elements -->
+<video id="processingVideo" autoplay muted playsinline style="display:none;"></video>
+<canvas id="canvas" style="display:none;"></canvas>
+
+<script>
+/* ---------------- STATE ---------------- */
+let stream = null;
+let detecting = false;
+let facingMode = "user";
+let interval = null;
+
+const API_URL = "http://localhost:8000/predict";
+
+/* ---------------- ELEMENTS ---------------- */
+const webcam = document.getElementById("webcam");
+const processingVideo = document.getElementById("processingVideo");
+const canvas = document.getElementById("canvas");
+const signBox = document.getElementById("sign");
+const speechBox = document.getElementById("speech");
+const status = document.getElementById("status");
+const placeholder = document.getElementById("placeholder");
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const switchBtn = document.getElementById("switchBtn");
+
+/* ---------------- CAMERA ---------------- */
+async function startCamera() {
+  console.log("Requesting camera permission...");
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode, width:{ideal:1280}, height:{ideal:720} },
+    audio: false
+  });
+
+  webcam.srcObject = stream;
+  processingVideo.srcObject = stream;
+
+  webcam.style.display = "block";
+  placeholder.style.display = "none";
+
+  status.textContent = "LIVE";
+  status.className = "status online";
+
+  switchBtn.disabled = false;
+}
+
+function stopCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  webcam.style.display = "none";
+  placeholder.style.display = "block";
+  status.textContent = "OFFLINE";
+  status.className = "status offline";
+}
+
+/* ---------------- DETECTION ---------------- */
+function startDetection() {
+  if (detecting) return;
+  detecting = true;
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  interval = setInterval(detectFrame, 200);
+}
+
+function stopDetection() {
+  detecting = false;
+  clearInterval(interval);
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+async function detectFrame() {
+  if (processingVideo.readyState !== 4) return;
+
+  canvas.width = processingVideo.videoWidth;
+  canvas.height = processingVideo.videoHeight;
+  canvas.getContext("2d").drawImage(processingVideo,0,0);
+
+  canvas.toBlob(async blob => {
+    if (!blob) return;
+    const fd = new FormData();
+    fd.append("file", blob, "frame.jpg");
+
+    try {
+      const res = await fetch(API_URL, { method:"POST", body:fd });
+      const data = await res.json();
+
+      if (data.prediction) {
+        signBox.value = data.prediction;
+
+        const words = speechBox.value.trim().split(" ");
+        if (words[words.length-1] !== data.prediction) {
+          speechBox.value += (speechBox.value ? " " : "") + data.prediction;
+        }
+      }
+    } catch (e) {
+      console.error("Backend error", e);
+    }
+  }, "image/jpeg", 0.8);
+}
+
+/* ---------------- EVENTS ---------------- */
+startBtn.onclick = async () => {
+  if (!stream) await startCamera();
+  startDetection();
+};
+
+stopBtn.onclick = stopDetection;
+
+switchBtn.onclick = async () => {
+  facingMode = facingMode === "user" ? "environment" : "user";
+  stopCamera();
+  await startCamera();
+};
+</script>
+
+</body>
+</html>
