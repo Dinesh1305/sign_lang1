@@ -1,21 +1,36 @@
+# -----------------------------
 # FastAPI stack
+# -----------------------------
 fastapi==0.109.2
 uvicorn==0.27.1
 python-multipart==0.0.9
 pydantic==2.6.4
-typing_extensions==4.9.0
+typing_extensions==4.5.0
 
-# Computer Vision
-opencv-python==4.9.0.80
-mediapipe==0.10.9
-
-# ML / DL (LEGACY COMPATIBLE)
-tensorflow==2.12.1
-
-# Core
-numpy==1.26.4
+# -----------------------------
+# Core numerical stack (LOCKED)
+# -----------------------------
+numpy==1.24.3
+protobuf==3.20.3
 pillow==10.2.0
 
-# Translation & TTS (Required for Speech Feature)
+# -----------------------------
+# Computer Vision (NO contrib)
+# -----------------------------
+opencv-python==4.9.0.80
+
+# -----------------------------
+# MediaPipe (deps blocked)
+# -----------------------------
+mediapipe==0.10.9
+
+# -----------------------------
+# ML / DL (COMPATIBLE)
+# -----------------------------
+tensorflow==2.12.1
+
+# -----------------------------
+# Translation & TTS
+# -----------------------------
 googletrans==4.0.0-rc1
 gTTS==2.5.1

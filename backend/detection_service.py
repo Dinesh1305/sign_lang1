@@ -1,44 +1,87 @@
 import cv2
 import numpy as np
 import mediapipe as mp
-from tensorflow.keras.models import load_model
+import tensorflow as tf
 
-# -------------------------------
-# 1. Load Model ONCE
-# -------------------------------
-print("🔄 Loading action recognition model...")
-model = load_model("action.tflite")
-print("✅ Model loaded successfully")
+# =====================================================
+# 1. LOAD TFLITE MODEL (ONCE)
+# =====================================================
+print("Loading TFLite action recognition model...")
 
-# -------------------------------
-# 2. Constants
-# -------------------------------
+interpreter = tf.lite.Interpreter(model_path="action.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+print("TFLite model loaded successfully")
+
+# =====================================================
+# 2. CONSTANTS
+# =====================================================
 SEQUENCE_LENGTH = 20
 SMOOTHING_WINDOW = 6
 MIN_CONSISTENT = 4
-threshold = 0.4
+THRESHOLD = 0.4
 
-actions = np.array(["hello", "thanks", "iloveyou"])  # update if needed
+actions = np.array(["hello", "thanks", "iloveyou"])
 
-# -------------------------------
-# 3. MediaPipe Setup
-# -------------------------------
+# =====================================================
+# 3. MEDIAPIPE SETUP
+# =====================================================
 mp_holistic = mp.solutions.holistic
-holistic = mp_holistic.Holistic(
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
 
-# -------------------------------
-# 4. Runtime Buffers
-# -------------------------------
+def create_holistic():
+    return mp_holistic.Holistic(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+
+# =====================================================
+# 4. BUFFERS (STATEFUL)
+# =====================================================
 sequence = []
 sentence = []
 predictions = []
 
-# -------------------------------
-# 5. Prediction Function
-# -------------------------------
+# =====================================================
+# 5. MEDIAPIPE HELPER FUNCTIONS
+# =====================================================
+def mediapipe_detection(image, model):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image.flags.writeable = False
+    results = model.process(image)
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    return image, results
+
+
+def extract_keypoints(results):
+    pose = np.array(
+        [[p.x, p.y, p.z, p.visibility]
+         for p in results.pose_landmarks.landmark]
+    ).flatten() if results.pose_landmarks else np.zeros(33 * 4)
+
+    face = np.array(
+        [[f.x, f.y, f.z]
+         for f in results.face_landmarks.landmark]
+    ).flatten() if results.face_landmarks else np.zeros(468 * 3)
+
+    lh = np.array(
+        [[l.x, l.y, l.z]
+         for l in results.left_hand_landmarks.landmark]
+    ).flatten() if results.left_hand_landmarks else np.zeros(21 * 3)
+
+    rh = np.array(
+        [[r.x, r.y, r.z]
+         for r in results.right_hand_landmarks.landmark]
+    ).flatten() if results.right_hand_landmarks else np.zeros(21 * 3)
+
+    return np.concatenate([pose, face, lh, rh])
+
+# =====================================================
+# 6. PREDICTION FUNCTION (API SAFE)
+# =====================================================
 def predict(image_bytes: bytes):
     global sequence, sentence, predictions
 
@@ -47,45 +90,54 @@ def predict(image_bytes: bytes):
     frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
     if frame is None:
-        raise ValueError("Invalid image data")
+        raise ValueError("Invalid image input")
 
-    # MediaPipe detection
-    image, results = mediapipe_detection(frame, holistic)
+    holistic = create_holistic()
 
-    # Sequence buffer
-    keypoints = extract_keypoints(results)
-    sequence.append(keypoints)
-    sequence = sequence[-SEQUENCE_LENGTH:]
+    try:
+        image, results = mediapipe_detection(frame, holistic)
 
-    predicted_action = None
-    confidence = 0.0
+        keypoints = extract_keypoints(results)
+        sequence.append(keypoints)
+        sequence[:] = sequence[-SEQUENCE_LENGTH:]
 
-    # Prediction
-    if len(sequence) == SEQUENCE_LENGTH:
-        res = model.predict(
-            np.expand_dims(sequence, axis=0),
-            verbose=0
-        )[0]
+        predicted_action = None
+        confidence = 0.0
 
-        pred_idx = np.argmax(res)
-        confidence = float(res[pred_idx])
+        if len(sequence) == SEQUENCE_LENGTH:
+            input_data = np.expand_dims(sequence, axis=0).astype(np.float32)
 
-        predictions.append(pred_idx)
-        predictions = predictions[-SMOOTHING_WINDOW:]
+            interpreter.set_tensor(
+                input_details[0]['index'],
+                input_data
+            )
+            interpreter.invoke()
 
-        if predictions.count(pred_idx) >= MIN_CONSISTENT:
-            if confidence > threshold:
+            res = interpreter.get_tensor(
+                output_details[0]['index']
+            )[0]
+
+            pred_idx = int(np.argmax(res))
+            confidence = float(res[pred_idx])
+
+            predictions.append(pred_idx)
+            predictions[:] = predictions[-SMOOTHING_WINDOW:]
+
+            if predictions.count(pred_idx) >= MIN_CONSISTENT and confidence > THRESHOLD:
                 action = actions[pred_idx]
 
-                if len(sentence) == 0 or action != sentence[-1]:
+                if not sentence or action != sentence[-1]:
                     sentence.append(action)
 
                 predicted_action = action
 
-        sentence[:] = sentence[-5:]
+            sentence[:] = sentence[-5:]
 
-    return {
-        "prediction": predicted_action,
-        "confidence": confidence,
-        "sentence": sentence
-    }
+        return {
+            "prediction": predicted_action,
+            "confidence": confidence,
+            "sentence": sentence
+        }
+
+    finally:
+        holistic.close()
