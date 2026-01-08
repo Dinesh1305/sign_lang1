@@ -27,18 +27,18 @@ THRESHOLD = 0.4
 actions = np.array(["hello", "thanks", "iloveyou"])
 
 # =====================================================
-# 3. MEDIAPIPE SETUP
+# 3. MEDIAPIPE SETUP (LOAD ONCE, NOT PER FRAME)
 # =====================================================
 mp_holistic = mp.solutions.holistic
 
-def create_holistic():
-    return mp_holistic.Holistic(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
+# ✅ FIX: Initialize this GLOBALLY, not inside predict()
+holistic_model = mp_holistic.Holistic(
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
 
 # =====================================================
-# 4. BUFFERS (STATEFUL)
+# 4. BUFFERS (Global - Single User Limitation)
 # =====================================================
 sequence = []
 sentence = []
@@ -80,7 +80,7 @@ def extract_keypoints(results):
     return np.concatenate([pose, face, lh, rh])
 
 # =====================================================
-# 6. PREDICTION FUNCTION (API SAFE)
+# 6. PREDICTION FUNCTION
 # =====================================================
 def predict(image_bytes: bytes):
     global sequence, sentence, predictions
@@ -92,52 +92,47 @@ def predict(image_bytes: bytes):
     if frame is None:
         raise ValueError("Invalid image input")
 
-    holistic = create_holistic()
+    # ✅ FIX: Use the global holistic_model instance
+    image, results = mediapipe_detection(frame, holistic_model)
 
-    try:
-        image, results = mediapipe_detection(frame, holistic)
+    keypoints = extract_keypoints(results)
+    sequence.append(keypoints)
+    sequence[:] = sequence[-SEQUENCE_LENGTH:]
 
-        keypoints = extract_keypoints(results)
-        sequence.append(keypoints)
-        sequence[:] = sequence[-SEQUENCE_LENGTH:]
+    predicted_action = None
+    confidence = 0.0
 
-        predicted_action = None
-        confidence = 0.0
+    if len(sequence) == SEQUENCE_LENGTH:
+        input_data = np.expand_dims(sequence, axis=0).astype(np.float32)
 
-        if len(sequence) == SEQUENCE_LENGTH:
-            input_data = np.expand_dims(sequence, axis=0).astype(np.float32)
+        interpreter.set_tensor(
+            input_details[0]['index'],
+            input_data
+        )
+        interpreter.invoke()
 
-            interpreter.set_tensor(
-                input_details[0]['index'],
-                input_data
-            )
-            interpreter.invoke()
+        res = interpreter.get_tensor(
+            output_details[0]['index']
+        )[0]
 
-            res = interpreter.get_tensor(
-                output_details[0]['index']
-            )[0]
+        pred_idx = int(np.argmax(res))
+        confidence = float(res[pred_idx])
 
-            pred_idx = int(np.argmax(res))
-            confidence = float(res[pred_idx])
+        predictions.append(pred_idx)
+        predictions[:] = predictions[-SMOOTHING_WINDOW:]
 
-            predictions.append(pred_idx)
-            predictions[:] = predictions[-SMOOTHING_WINDOW:]
+        if predictions.count(pred_idx) >= MIN_CONSISTENT and confidence > THRESHOLD:
+            action = actions[pred_idx]
 
-            if predictions.count(pred_idx) >= MIN_CONSISTENT and confidence > THRESHOLD:
-                action = actions[pred_idx]
+            if not sentence or action != sentence[-1]:
+                sentence.append(action)
 
-                if not sentence or action != sentence[-1]:
-                    sentence.append(action)
+            predicted_action = action
 
-                predicted_action = action
+        sentence[:] = sentence[-5:]
 
-            sentence[:] = sentence[-5:]
-
-        return {
-            "prediction": predicted_action,
-            "confidence": confidence,
-            "sentence": sentence
-        }
-
-    finally:
-        holistic.close()
+    return {
+        "prediction": predicted_action,
+        "confidence": confidence,
+        "sentence": sentence
+    }

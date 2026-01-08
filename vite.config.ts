@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import basicSsl from '@vitejs/plugin-basic-ssl' // Import the SSL plugin
+// REMOVED: import basicSsl from '@vitejs/plugin-basic-ssl' 
 
 import { NodeGlobalsPolyfillPlugin } from '@esbuild-plugins/node-globals-polyfill'
 import { NodeModulesPolyfillPlugin } from '@esbuild-plugins/node-modules-polyfill'
@@ -9,14 +9,13 @@ import { NodeModulesPolyfillPlugin } from '@esbuild-plugins/node-modules-polyfil
 export default defineConfig({
   plugins: [
     react(),
-    basicSsl() // Add the plugin here
+    // REMOVED: basicSsl() to disable HTTPS
   ],
 
   server: {
     host: '0.0.0.0', // Allows access from your phone
     port: 5173,
-    strictPort: true,
-    https: true // Enables secure server
+    strictPort: true
   },
 
   resolve: {

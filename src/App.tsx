@@ -25,8 +25,7 @@ function App() {
   // -----------------------------
   // Camera State
   // -----------------------------
-  const [facingMode, setFacingMode] =
-    useState<'user' | 'environment'>('user');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   // -----------------------------
   // Refs
@@ -34,6 +33,9 @@ function App() {
   const detectionIntervalRef = useRef<number | null>(null);
   const processingVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // ✅ FIX 1: The Busy Lock
+  const isProcessing = useRef(false);
 
   // -----------------------------
   // Cleanup on Unmount
@@ -73,8 +75,9 @@ function App() {
 
       setStream(mediaStream);
       setIsCameraActive(true);
+      console.log("📷 Camera started successfully");
     } catch (err) {
-      console.error('Camera error:', err);
+      console.error('❌ Camera error:', err);
       alert('Camera access denied');
     }
   };
@@ -83,6 +86,7 @@ function App() {
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       setStream(null);
+      console.log("📷 Camera stopped");
     }
     handleStopDetection();
     setIsCameraActive(false);
@@ -98,6 +102,12 @@ function App() {
   // FRAME DETECTION (CORE FIXED)
   // -----------------------------
   const detectFrame = async () => {
+    // ✅ FIX 2: Check if busy
+    if (isProcessing.current) {
+        // console.log("⚠️ Backend busy - Skipping frame to prevent pile-up");
+        return;
+    }
+
     if (
       !processingVideoRef.current ||
       !canvasRef.current ||
@@ -107,39 +117,46 @@ function App() {
     const video = processingVideoRef.current;
     if (video.readyState !== 4) return;
 
+    // ✅ FIX 3: Lock the process
+    isProcessing.current = true;
+    console.log("🔒 Process Locked. Preparing frame...");
+
     const canvas = canvasRef.current;
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+        console.error("❌ Failed to get canvas context");
+        isProcessing.current = false; 
+        return;
+    }
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     canvas.toBlob(async blob => {
       if (!blob) {
         console.error("❌ Error: Canvas failed to generate blob");
+        isProcessing.current = false; 
         return;
       }
 
-      // DEBUG: Log that we are attempting to send a frame
-      console.log(`📸 Sending frame... Size: ${blob.size} bytes`);
+      console.log(`🚀 Sending frame to backend... (${blob.size} bytes)`);
 
       const formData = new FormData();
       formData.append('file', blob, 'frame.jpg');
 
       try {
-        // DEBUG: Log the URL we are hitting
-        const API_URL = 'http://localhost:8000/predict';
-        console.log(`🌐 Fetching: ${API_URL}`);
+        const API_URL = 'http://127.0.0.1:8000/predict';
+        
+        const startTime = performance.now(); // Start timer
+        const response = await fetch(API_URL, { 
+            method: 'POST', 
+            body: formData 
+        });
+        const endTime = performance.now(); // End timer
 
-        const response = await fetch(
-          API_URL,
-          { method: 'POST', body: formData }
-        );
-
-        // DEBUG: Log the raw response status
-        console.log(`📡 Response Status: ${response.status} ${response.statusText}`);
+        console.log(`⏱️ Latency: ${(endTime - startTime).toFixed(2)}ms`);
 
         if (!response.ok) {
           console.error(`❌ Server Error: ${response.status}`);
@@ -147,16 +164,11 @@ function App() {
         }
 
         const data = await response.json();
+        console.log("✅ Prediction received:", data);
 
-        // DEBUG: Log the actual data received from backend
-        console.log("✅ Backend Data:", data);
-
-        // ✅ FIX 1: correct response field
         if (data.prediction) {
-          console.log(`👋 Recognized: ${data.prediction}`);
           setRecognizedSign(data.prediction);
 
-          // ✅ sentence builder (debounced)
           setConvertedSpeech(prev => {
             const words = prev.trim().split(' ');
             const last = words[words.length - 1];
@@ -168,8 +180,11 @@ function App() {
           });
         }
       } catch (err) {
-        // DEBUG: Log network errors (like Connection Refused)
-        console.error('🔥 CRITICAL NETWORK ERROR:', err);
+        console.error('🔥 NETWORK ERROR:', err);
+      } finally {
+          // ✅ FIX 5: CRITICAL - Unlock
+          isProcessing.current = false;
+          console.log("🔓 Process Unlocked. Ready for next frame.");
       }
     }, 'image/jpeg', 0.8);
   };
@@ -179,17 +194,18 @@ function App() {
   // -----------------------------
   const handleStartDetection = () => {
     if (isDetecting) return;
-
+    
+    console.log("▶️ Detection started");
     setIsDetecting(true);
 
-    // ✅ FIX 2: faster interval (VERY IMPORTANT)
     detectionIntervalRef.current = window.setInterval(
       detectFrame,
-      200
+      100 
     );
   };
 
   const handleStopDetection = () => {
+    console.log("⏹️ Detection stopped");
     setIsDetecting(false);
     if (detectionIntervalRef.current) {
       clearInterval(detectionIntervalRef.current);
@@ -198,6 +214,7 @@ function App() {
   };
 
   const handleReset = () => {
+    console.log("🔄 Resetting app state");
     handleStopDetection();
     setRecognizedSign('');
     setConvertedSpeech('');
