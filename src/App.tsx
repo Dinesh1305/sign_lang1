@@ -6,11 +6,6 @@ import OutputPanel from './components/OutputPanel';
 import ControlPanel from './components/ControlPanel';
 import LandingPage from './components/LandingPage';
 
-const ISL_SIGNS = [
-  'Hello', 'Thank You', 'Please', 'Yes', 'No', 
-  'Help', 'Good Morning', 'Goodbye', 'Sorry', 'Welcome'
-];
-
 function App() {
   // State to control view navigation
   const [showLanding, setShowLanding] = useState(true);
@@ -23,10 +18,13 @@ function App() {
   const [recognizedSign, setRecognizedSign] = useState('');
   const [convertedSpeech, setConvertedSpeech] = useState('');
   
-  // New State for Camera Switching ('user' = front, 'environment' = back)
+  // Camera Switching State
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   
+  // Refs for detection loop and image processing
   const detectionIntervalRef = useRef<number | null>(null);
+  const processingVideoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Clean up camera when component unmounts
   useEffect(() => {
@@ -35,9 +33,14 @@ function App() {
     };
   }, []);
 
-  // Updated startCamera to accept an optional mode
+  // Sync the visible stream with our hidden processing video
+  useEffect(() => {
+    if (processingVideoRef.current && stream) {
+      processingVideoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
   const startCamera = async (requestedMode?: 'user' | 'environment') => {
-    // Stop any existing stream before starting a new one
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
     }
@@ -48,7 +51,6 @@ function App() {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { 
           facingMode: modeToUse,
-          // Use 'ideal' constraints for mobile compatibility
           width: { ideal: 1280 }, 
           height: { ideal: 720 }
         },
@@ -68,32 +70,81 @@ function App() {
       setStream(null);
       setIsCameraActive(false);
     }
+    handleStopDetection();
   };
 
-  // New function to toggle camera
   const handleToggleCamera = () => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(newMode);
-    
-    // Only restart the camera if it's currently active
     if (isCameraActive) {
       startCamera(newMode);
     }
   };
 
-  const simulateGestureDetection = () => {
-    const randomSign = ISL_SIGNS[Math.floor(Math.random() * ISL_SIGNS.length)];
-    setRecognizedSign(randomSign);
-    setTimeout(() => {
-      setConvertedSpeech(prev => (prev ? `${prev} ${randomSign}` : randomSign));
-    }, 500);
+  // --- Backend Integration Logic ---
+  const detectFrame = async () => {
+    if (!processingVideoRef.current || !canvasRef.current || !isCameraActive) return;
+
+    const video = processingVideoRef.current;
+    const canvas = canvasRef.current;
+
+    // Ensure video is playing and has dimensions
+    if (video.readyState !== 4) return;
+
+    // Draw current video frame to canvas
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Convert canvas to blob and send to backend
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+
+      const formData = new FormData();
+      formData.append('file', blob, 'frame.jpg');
+
+      try {
+        const response = await fetch('http://localhost:8000/predict', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) throw new Error('Network response was not ok');
+
+        const data = await response.json();
+
+        // Update state with result from Python backend
+        if (data.sign) {
+          setRecognizedSign(data.sign);
+          
+          // Simple logic to append speech (debounced)
+          setConvertedSpeech(prev => {
+            const words = prev.trim().split(' ');
+            const lastWord = words[words.length - 1];
+            
+            // Only append if it's a new word or enough time has passed
+            if (lastWord !== data.sign) {
+               return prev ? `${prev} ${data.sign}` : data.sign;
+            }
+            return prev;
+          });
+        }
+      } catch (error) {
+        console.error('Prediction Error:', error);
+      }
+    }, 'image/jpeg', 0.8); // 0.8 quality to reduce bandwidth
   };
 
   const handleStartDetection = () => {
     setIsDetecting(true);
+    // Poll the backend every 1000ms (1 second)
+    // You can lower this to 500ms or 200ms if your backend is fast enough
     detectionIntervalRef.current = window.setInterval(() => {
-      simulateGestureDetection();
-    }, 3000);
+      detectFrame();
+    }, 1000);
   };
 
   const handleStopDetection = () => {
@@ -130,6 +181,17 @@ function App() {
       <Header darkMode={darkMode} />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {/* Hidden video and canvas for processing frames */}
+        <video
+          ref={processingVideoRef}
+          style={{ display: 'none' }}
+          autoPlay
+          playsInline
+          muted
+        />
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
             <CameraCard
@@ -155,7 +217,7 @@ function App() {
                 onStopDetection={handleStopDetection}
                 onReset={handleReset}
                 onToggleDarkMode={toggleDarkMode}
-                onToggleCamera={handleToggleCamera} // Pass the new handler
+                onToggleCamera={handleToggleCamera}
               />
               
               <button 
