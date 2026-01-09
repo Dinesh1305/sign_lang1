@@ -2,11 +2,12 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
+import threading
 
 # =====================================================
 # 1. LOAD TFLITE MODEL (ONCE)
 # =====================================================
-print("Loading TFLite action recognition model...")
+print("[ML] Loading TFLite model...")
 
 interpreter = tf.lite.Interpreter(model_path="action.tflite")
 interpreter.allocate_tensors()
@@ -14,7 +15,7 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-print("TFLite model loaded successfully")
+print("[ML] TFLite model loaded")
 
 # =====================================================
 # 2. CONSTANTS
@@ -27,93 +28,111 @@ THRESHOLD = 0.4
 actions = np.array(["hello", "thanks", "iloveyou"])
 
 # =====================================================
-# 3. MEDIAPIPE SETUP (LOAD ONCE, NOT PER FRAME)
+# 3. MEDIAPIPE (GLOBAL, SINGLE INSTANCE)
 # =====================================================
 mp_holistic = mp.solutions.holistic
 
-# ✅ FIX: Initialize this GLOBALLY, not inside predict()
+print("[ML] Initializing MediaPipe Holistic...")
+
 holistic_model = mp_holistic.Holistic(
+    static_image_mode=False,
+    model_complexity=1,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
 
+print("[ML] MediaPipe Holistic ready")
+
 # =====================================================
-# 4. BUFFERS (Global - Single User Limitation)
+# 4. GLOBAL BUFFERS (SINGLE USER)
 # =====================================================
 sequence = []
 sentence = []
 predictions = []
 
+# Thread lock to avoid concurrent inference blocking
+lock = threading.Lock()
+
 # =====================================================
-# 5. MEDIAPIPE HELPER FUNCTIONS
+# 5. HELPER FUNCTIONS
 # =====================================================
-def mediapipe_detection(image, model):
+def mediapipe_detection(image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image.flags.writeable = False
-    results = model.process(image)
+    results = holistic_model.process(image)
     image.flags.writeable = True
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    return image, results
+    return results
 
 
 def extract_keypoints(results):
-    pose = np.array(
-        [[p.x, p.y, p.z, p.visibility]
-         for p in results.pose_landmarks.landmark]
-    ).flatten() if results.pose_landmarks else np.zeros(33 * 4)
+    pose = (
+        np.array([[p.x, p.y, p.z, p.visibility]
+                  for p in results.pose_landmarks.landmark]).flatten()
+        if results.pose_landmarks else np.zeros(33 * 4)
+    )
 
-    face = np.array(
-        [[f.x, f.y, f.z]
-         for f in results.face_landmarks.landmark]
-    ).flatten() if results.face_landmarks else np.zeros(468 * 3)
+    face = (
+        np.array([[f.x, f.y, f.z]
+                  for f in results.face_landmarks.landmark]).flatten()
+        if results.face_landmarks else np.zeros(468 * 3)
+    )
 
-    lh = np.array(
-        [[l.x, l.y, l.z]
-         for l in results.left_hand_landmarks.landmark]
-    ).flatten() if results.left_hand_landmarks else np.zeros(21 * 3)
+    lh = (
+        np.array([[l.x, l.y, l.z]
+                  for l in results.left_hand_landmarks.landmark]).flatten()
+        if results.left_hand_landmarks else np.zeros(21 * 3)
+    )
 
-    rh = np.array(
-        [[r.x, r.y, r.z]
-         for r in results.right_hand_landmarks.landmark]
-    ).flatten() if results.right_hand_landmarks else np.zeros(21 * 3)
+    rh = (
+        np.array([[r.x, r.y, r.z]
+                  for r in results.right_hand_landmarks.landmark]).flatten()
+        if results.right_hand_landmarks else np.zeros(21 * 3)
+    )
 
     return np.concatenate([pose, face, lh, rh])
 
+
 # =====================================================
-# 6. PREDICTION FUNCTION
+# 6. MAIN PREDICT FUNCTION (NON-BLOCKING)
 # =====================================================
 def predict(image_bytes: bytes):
     global sequence, sentence, predictions
 
-    # Decode image bytes
+    print("[ML] predict() called")
+
+    # Decode image
     np_img = np.frombuffer(image_bytes, np.uint8)
     frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
     if frame is None:
-        raise ValueError("Invalid image input")
+        print("[ML] Invalid image")
+        return {"prediction": None, "confidence": 0.0, "sentence": sentence}
 
-    # ✅ FIX: Use the global holistic_model instance
-    image, results = mediapipe_detection(frame, holistic_model)
-
+    # MediaPipe
+    results = mediapipe_detection(frame)
     keypoints = extract_keypoints(results)
+
+    # Update sequence
     sequence.append(keypoints)
     sequence[:] = sequence[-SEQUENCE_LENGTH:]
 
     predicted_action = None
     confidence = 0.0
 
+    # Run inference only when sequence full
     if len(sequence) == SEQUENCE_LENGTH:
-        input_data = np.expand_dims(sequence, axis=0).astype(np.float32)
+        with lock:  # prevents concurrent invoke() blocking
+            input_data = np.expand_dims(sequence, axis=0).astype(np.float32)
 
-        interpreter.set_tensor(
-            input_details[0]['index'],
-            input_data
-        )
-        interpreter.invoke()
+            interpreter.set_tensor(
+                input_details[0]["index"],
+                input_data
+            )
+            interpreter.invoke()
 
-        res = interpreter.get_tensor(
-            output_details[0]['index']
-        )[0]
+            res = interpreter.get_tensor(
+                output_details[0]["index"]
+            )[0]
 
         pred_idx = int(np.argmax(res))
         confidence = float(res[pred_idx])

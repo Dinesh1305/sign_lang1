@@ -14,11 +14,13 @@ video { width:100%; height:100%; object-fit:cover; border-radius:10px; display:n
 .status { position:absolute; top:10px; right:10px; padding:6px 12px; border-radius:20px; font-size:12px; }
 .offline { background:#eee; color:#555; }
 .online { background:#d1fae5; color:#065f46; }
-textarea { width:100%; height:80px; margin-top:10px; resize:none; padding:10px; }
+textarea { width:100%; height:80px; margin-top:10px; resize:none; padding:10px; font-size:14px; }
 button { width:100%; padding:14px; margin-top:10px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; }
 .start { background:#14b8a6; color:white; }
 .stop { background:#ef4444; color:white; }
 .switch { background:#e5e7eb; }
+.speak { background:#6366f1; color:white; }
+select { width:100%; padding:12px; margin-top:10px; border-radius:8px; }
 button:disabled { opacity:0.5; cursor:not-allowed; }
 </style>
 </head>
@@ -37,8 +39,21 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
     </div>
 
     <h3 style="margin-top:20px;">Detection Output</h3>
-    <textarea id="sign" placeholder="Recognized sign..."></textarea>
-    <textarea id="speech" placeholder="Converted sentence..."></textarea>
+
+    <!-- NOW EDITABLE -->
+    <textarea id="sign" placeholder="Recognized sign (you can type here)..."></textarea>
+
+    <textarea id="speech" placeholder="Converted sentence (you can type here)..."></textarea>
+
+    <select id="languageSelect">
+      <option value="Tamil" selected>Tamil</option>
+      <option value="Malayalam">Malayalam</option>
+      <option value="Telugu">Telugu</option>
+      <option value="Kannada">Kannada</option>
+      <option value="Hindi">Hindi</option>
+    </select>
+
+    <button id="speakBtn" class="speak" disabled>🔊 Speak Sentence</button>
   </div>
 
   <!-- RIGHT -->
@@ -51,20 +66,19 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 
 </div>
 
-<!-- hidden processing elements -->
 <video id="processingVideo" autoplay muted playsinline style="display:none;"></video>
 <canvas id="canvas" style="display:none;"></canvas>
+<audio id="audioPlayer"></audio>
 
 <script>
-/* ---------------- STATE ---------------- */
+const PREDICT_URL = "http://localhost:8000/predict";
+const SPEAK_URL   = "http://localhost:8000/speak";
+
 let stream = null;
 let detecting = false;
 let facingMode = "user";
 let interval = null;
 
-const API_URL = "http://localhost:8000/predict";
-
-/* ---------------- ELEMENTS ---------------- */
 const webcam = document.getElementById("webcam");
 const processingVideo = document.getElementById("processingVideo");
 const canvas = document.getElementById("canvas");
@@ -76,10 +90,20 @@ const placeholder = document.getElementById("placeholder");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const switchBtn = document.getElementById("switchBtn");
+const speakBtn = document.getElementById("speakBtn");
+const audioPlayer = document.getElementById("audioPlayer");
+const languageSelect = document.getElementById("languageSelect");
 
-/* ---------------- CAMERA ---------------- */
+/* ---------- HELPERS ---------- */
+function updateSpeakButton() {
+  speakBtn.disabled = speechBox.value.trim().length === 0;
+}
+
+/* enable speak when user types */
+speechBox.addEventListener("input", updateSpeakButton);
+
+/* ---------- CAMERA ---------- */
 async function startCamera() {
-  console.log("Requesting camera permission...");
   stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode, width:{ideal:1280}, height:{ideal:720} },
     audio: false
@@ -90,10 +114,8 @@ async function startCamera() {
 
   webcam.style.display = "block";
   placeholder.style.display = "none";
-
   status.textContent = "LIVE";
   status.className = "status online";
-
   switchBtn.disabled = false;
 }
 
@@ -106,15 +128,13 @@ function stopCamera() {
   status.className = "status offline";
 }
 
-/* ---------------- DETECTION ---------------- */
+/* ---------- DETECTION ---------- */
 function startDetection() {
   if (detecting) return;
   detecting = true;
-
   startBtn.disabled = true;
   stopBtn.disabled = false;
-
-  interval = setInterval(detectFrame, 200);
+  interval = setInterval(detectFrame, 300);
 }
 
 function stopDetection() {
@@ -133,28 +153,55 @@ async function detectFrame() {
 
   canvas.toBlob(async blob => {
     if (!blob) return;
+
     const fd = new FormData();
     fd.append("file", blob, "frame.jpg");
 
     try {
-      const res = await fetch(API_URL, { method:"POST", body:fd });
+      const res = await fetch(PREDICT_URL, { method:"POST", body:fd });
       const data = await res.json();
 
       if (data.prediction) {
         signBox.value = data.prediction;
 
-        const words = speechBox.value.trim().split(" ");
-        if (words[words.length-1] !== data.prediction) {
+        const lastWord = speechBox.value.trim().split(" ").pop();
+        if (lastWord !== data.prediction) {
           speechBox.value += (speechBox.value ? " " : "") + data.prediction;
         }
+
+        updateSpeakButton();
       }
     } catch (e) {
-      console.error("Backend error", e);
+      console.error("Predict error", e);
     }
   }, "image/jpeg", 0.8);
 }
 
-/* ---------------- EVENTS ---------------- */
+/* ---------- SPEAK ---------- */
+speakBtn.onclick = async () => {
+  const text = speechBox.value.trim();
+  const language = languageSelect.value;
+  if (!text) return;
+
+  try {
+    speakBtn.disabled = true;
+    const res = await fetch(SPEAK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language })
+    });
+
+    const audioBlob = await res.blob();
+    audioPlayer.src = URL.createObjectURL(audioBlob);
+    audioPlayer.play();
+  } catch (e) {
+    console.error("Speak error", e);
+  } finally {
+    speakBtn.disabled = false;
+  }
+};
+
+/* ---------- EVENTS ---------- */
 startBtn.onclick = async () => {
   if (!stream) await startCamera();
   startDetection();

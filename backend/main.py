@@ -5,9 +5,10 @@ from pydantic import BaseModel
 import uvicorn
 import io
 import time
+import urllib.parse  # ✅ ADDED: For header encoding
 
 # -----------------------------
-# IMPORT ML SERVICE
+# IMPORT ML & TRANSLATION SERVICES
 # -----------------------------
 from detection_service import predict as ml_predict
 from translation_service import translator_service
@@ -15,7 +16,7 @@ from translation_service import translator_service
 # -----------------------------
 # APP INIT
 # -----------------------------
-app = FastAPI(title="Sign Language API")
+app = FastAPI(title="Sign Language AI (Hybrid)")
 
 print("[BOOT] FastAPI application starting...")
 
@@ -38,79 +39,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("[BOOT] CORS configured with origins:", origins)
 
 # -----------------------------
-# REQUEST MODELS
+# MODELS
 # -----------------------------
 class SpeakRequest(BaseModel):
     text: str
     language: str = "en"
 
+
 # -----------------------------
-# HEALTH CHECK
+# ENDPOINTS
 # -----------------------------
 @app.get("/")
 def root():
-    print("[GET /] Health check called")
-    return {
-        "status": "online",
-        "message": "Sign Language Backend is running"
-    }
+    return {"status": "online", "message": "Hybrid Backend Running"}
 
-# -----------------------------
-# PREDICT ENDPOINT (REAL ML)
-# -----------------------------
+
+# 1. CAMERA PREDICTION
 @app.post("/predict")
 async def predict_sign(file: UploadFile = File(...)):
-    print("[POST /predict] Request received")
-
     if not file.content_type.startswith("image/"):
-        print("[POST /predict] Invalid file type:", file.content_type)
         raise HTTPException(status_code=400, detail="File must be an image")
 
     image_bytes = await file.read()
 
-    print(f"[POST /predict] Image received | Size: {len(image_bytes)} bytes")
-
     try:
-        start = time.time()
+        # Run ML Model
         result = ml_predict(image_bytes)
-        end = time.time()
-
-        print(
-            "[POST /predict] Prediction result:",
-            result,
-            f"| Time taken: {end - start:.3f}s"
-        )
-
         return result
-
     except Exception as e:
         print("[POST /predict][ERROR]", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-# -----------------------------
-# SPEAK ENDPOINT
-# -----------------------------
+
+# 2. TEXT TO SPEECH (For Manual & Auto)
 @app.post("/speak")
 async def speak_text(request: SpeakRequest):
-    print(
-        f"[POST /speak] Request received | "
-        f"text='{request.text}' | lang='{request.language}'"
-    )
+    print(f"[POST /speak] '{request.text}' -> {request.language}")
 
     try:
+        # Translate
         translated_text = translator_service.translate(
             request.text,
             request.language
         )
 
-        print("[POST /speak] Translated text:", translated_text)
-
-        if not translated_text:
-            raise HTTPException(status_code=500, detail="Translation failed")
-
+        # Generate Audio
         audio_stream = translator_service.text_to_speech(
             translated_text,
             request.language
@@ -119,32 +94,19 @@ async def speak_text(request: SpeakRequest):
         if not audio_stream:
             raise HTTPException(status_code=500, detail="Audio generation failed")
 
-        print("[POST /speak] Audio stream generated successfully")
+        # ✅ FIX: URL Encode the header value to prevent crash on non-Latin characters
+        safe_header_text = urllib.parse.quote(translated_text)
 
         return StreamingResponse(
             audio_stream,
             media_type="audio/mpeg",
-            headers={
-                "X-Translated-Text": translated_text
-            }
+            headers={"X-Translated-Text": safe_header_text}
         )
 
-    except HTTPException:
-        raise
     except Exception as e:
         print("[POST /speak][ERROR]", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-# -----------------------------
-# SERVER ENTRY
-# -----------------------------
+
 if __name__ == "__main__":
-    print("[BOOT] Starting Uvicorn server on port 8000")
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
-
-
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
